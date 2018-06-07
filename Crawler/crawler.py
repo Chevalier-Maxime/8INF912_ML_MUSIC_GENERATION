@@ -10,6 +10,10 @@ response = http.request('GET', url)
 soup = BeautifulSoup(response.data,"lxml")
 
 cwd = os.getcwd()
+if not os.path.exists(cwd + os.sep + "Musics"):
+    os.makedirs(cwd + os.sep + "Musics")
+
+cwd = cwd + os.sep + "Musics"
 
 game_name = None
 
@@ -27,7 +31,6 @@ while row_index < len(rows):
         game_name = row.getText().replace('\n','')
         print(game_name)
         #Construction du dossier
-        print(os.sep)
         game_path = (cwd + os.sep + game_name).rstrip()
         print(game_path)
         if not os.path.exists(game_path):
