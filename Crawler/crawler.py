@@ -3,6 +3,15 @@ import urllib3
 import urllib.request
 import os
 
+
+def remove(value):
+    deletechars = '\/:*?"<>|' #Unotorized Windows characters
+    for c in deletechars:
+        value = value.replace(c,'')
+    value = value.replace('\n','')
+    return value
+
+
 http = urllib3.PoolManager()
 
 url = 'https://www.vgmusic.com/music/console/nintendo/nes/'
@@ -28,7 +37,7 @@ while row_index < len(rows):
     #print(row,"row class : ", row.get("class"))
     if(row.get("class") == ['header']):
         # On a le nom du jeu
-        game_name = row.getText().replace('\n','')
+        game_name = remove(row.getText())
         print(game_name)
         #Construction du dossier
         game_path = (cwd + os.sep + game_name).rstrip()
@@ -45,12 +54,15 @@ while row_index < len(rows):
                 link = col.find('a', href=True)
                 if((link != None) and (".mid" in link.get("href"))):
                     #Telecharger le lien
-                    song_name = link.get("href")
+                    song_name = remove(link.get("href"))
                     url_game = url+song_name
                     print(song_name)
                     urllib.request.urlretrieve(url_game, game_path+os.sep+song_name)
             row_index+=1
-            row = rows[row_index]
+            if(row_index < len(rows)):
+                row = rows[row_index]
+            else:
+                break
     else:
         row_index+=1
     
