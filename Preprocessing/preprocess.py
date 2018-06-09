@@ -68,6 +68,10 @@ def process_one(process_args):
     except exceptions21.StreamException:
         logger.error('Cannot translate %s to music21 stream' % file_loc)
         return
+    except IndexError:
+        logger.error(('Known unknown error when translating %s to music21 ' +
+                     'stream') % file_loc)
+        return
 
     if not args.keep_tonic:
         transpose_c(score)
