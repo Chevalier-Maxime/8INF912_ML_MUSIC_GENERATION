@@ -6,7 +6,7 @@ import os
 import argparse
 import logging
 from pathlib import Path
-from music21 import midi
+from music21 import midi, interval, pitch, exceptions21
 
 
 logging.basicConfig(level=logging.INFO)
@@ -53,21 +53,37 @@ def process_all(files, args):
 
 
 def process_one(file_loc, args):
-    piece = midi.MidiFile()
-    piece.open(file_loc)
-    piece.read()
-    piece.close()
+    piece = open_midi(file_loc)
 
     if not args.keep_percussions:
         filter_out_percussions(piece)
+
+    try:
+        score = midi.translate.midiFileToStream(piece)
+    except exceptions21.StreamException:
+        logger.error('No tracks in %s' % file_loc)
+        return
+
+    if not args.keep_tonic:
+        transpose_c(score)
 
     # TODO: Add below next preprocessing steps
 
     # TODO: The purpose of the next line is to check that preprocessing
     # operations are right
+    piece = midi.translate.streamToMidiFile(score)
     save_midi(piece, file_loc, args)
 
     # TODO: Convert to network format
+
+
+def open_midi(file_loc):
+    piece = midi.MidiFile()
+    piece.open(file_loc)
+    piece.read()
+    piece.close()
+
+    return piece
 
 
 def save_midi(piece, file_loc, args):
@@ -82,10 +98,7 @@ def save_midi(piece, file_loc, args):
     folder = os.path.join(args.output_folder, file_loc_split[-2])
 
     # Create parents folders
-    try:
-        Path(folder).mkdir(parents=True)
-    except FileExistsError:
-        logger.warning('%s already exists. Overwriting can occur.' % folder)
+    Path(folder).mkdir(parents=True, exist_ok=True)
 
     # file_loc_split[-1] is the music file
     file_parts = os.path.splitext(file_loc_split[-1])
@@ -107,6 +120,12 @@ def filter_out_percussions(piece):
     piece.tracks[:] = [t for t in piece.tracks if 10 not in t.getChannels()]
 
 
+def transpose_c(score):
+    tonic = score.analyze('key').tonic
+    transpos_interval = interval.Interval(tonic, pitch.Pitch('C'))
+    score.transpose(transpos_interval, inPlace=True)
+
+
 if __name__ == "__main__":
     assert sys.version_info >= (3, 4)
 
@@ -118,6 +137,8 @@ if __name__ == "__main__":
 
     parser.add_argument('--keep-percussions', dest='keep_percussions',
                         action='store_true', help='Do not remove percussions')
+    parser.add_argument('--keep-tonic', dest='keep_tonic', action='store_true',
+                        help='Do not transpose to C')
     parser.set_defaults(keep_percussions=False)
 
     args = parser.parse_args()
