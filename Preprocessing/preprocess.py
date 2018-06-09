@@ -13,7 +13,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('Preprocessor')
 
 
-class EmptyDataFolder(object):
+class EmptyDataFolder(Exception):
     pass
 
 
