@@ -5,9 +5,10 @@ import sys
 import os
 import argparse
 import logging
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from music21 import midi, interval, pitch, exceptions21
+from tqdm import tqdm
 
 
 logging.basicConfig(level=logging.INFO)
@@ -51,8 +52,27 @@ def scan_mid_files(data_folder):
 def process_all(files, args):
     process_args = ((cur_file, args) for cur_file in files)
     with ProcessPoolExecutor() as executor:
-        for result in executor.map(process_one, process_args):
+        for result in tqdm_parallel_map(executor, process_one, process_args):
             pass
+
+
+# Thanks https://techoverflow.net/2017/05/18/
+# how-to-use-concurrent-futures-map-with-a-tqdm-progress-bar/
+def tqdm_parallel_map(executor, fn, *iterables, **kwargs):
+    """
+    Equivalent to executor.map(fn, *iterables),
+    but displays a tqdm-based progress bar.
+
+    Does not support timeout or chunksize as executor.submit is used internally
+
+    **kwargs is passed to tqdm.
+    """
+    futures_list = []
+    for iterable in iterables:
+        futures_list += [executor.submit(fn, i) for i in iterable]
+        for f in tqdm(as_completed(futures_list), total=len(futures_list),
+                      **kwargs):
+            yield f.result()
 
 
 def process_one(process_args):
