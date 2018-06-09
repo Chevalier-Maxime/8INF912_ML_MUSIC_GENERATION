@@ -5,6 +5,7 @@ import sys
 import os
 import argparse
 import logging
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from music21 import midi, interval, pitch, exceptions21
 
@@ -48,11 +49,15 @@ def scan_mid_files(data_folder):
 
 
 def process_all(files, args):
-    for f in files:
-        process_one(f, args)
+    process_args = ((cur_file, args) for cur_file in files)
+    with ProcessPoolExecutor() as executor:
+        for result in executor.map(process_one, process_args):
+            pass
 
 
-def process_one(file_loc, args):
+def process_one(process_args):
+    file_loc, args = process_args
+
     piece = open_midi(file_loc)
 
     if not args.keep_percussions:
@@ -61,7 +66,7 @@ def process_one(file_loc, args):
     try:
         score = midi.translate.midiFileToStream(piece)
     except exceptions21.StreamException:
-        logger.error('No tracks in %s' % file_loc)
+        logger.error('Cannot translate %s to music21 stream' % file_loc)
         return
 
     if not args.keep_tonic:
