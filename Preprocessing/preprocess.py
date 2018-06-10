@@ -15,7 +15,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('Preprocessor')
 
 
-class EmptyDataFolder(Exception):
+class EmptyDataFolderException(Exception):
+    pass
+
+
+class TranspositionException(Exception):
     pass
 
 
@@ -24,7 +28,7 @@ def scan_mid_files(data_folder):
 
     root_dir = os.listdir(data_folder)
     if len(root_dir) == 0:
-        raise EmptyDataFolder()
+        raise EmptyDataFolderException()
 
     for node in root_dir:
         node_absolute = os.path.join(data_folder, node)
@@ -83,24 +87,17 @@ def process_one(process_args):
     if not args.keep_percussions:
         filter_out_percussions(piece)
 
-    try:
-        score = midi.translate.midiFileToStream(piece)
-    except exceptions21.StreamException:
-        logger.error('Cannot translate %s to music21 stream' % file_loc)
-        return
-    except IndexError:
-        logger.error(('Known unknown error when translating %s to music21 ' +
-                     'stream') % file_loc)
-        return
-
     if not args.keep_tonic:
-        transpose_c(score)
+        try:
+            transpose_c(piece, file_loc)
+        except TranspositionException as e:
+            logger.error(e)
+            return
 
     # TODO: Add below next preprocessing steps
 
     # TODO: The purpose of the next line is to check that preprocessing
     # operations are right
-    piece = midi.translate.streamToMidiFile(score)
     save_midi(piece, file_loc, args)
 
     # TODO: Convert to network format
@@ -149,10 +146,24 @@ def filter_out_percussions(piece):
     piece.tracks[:] = [t for t in piece.tracks if 10 not in t.getChannels()]
 
 
-def transpose_c(score):
+def transpose_c(piece, file_loc):
+    try:
+        score = midi.translate.midiFileToStream(piece)
+    except exceptions21.StreamException:
+        raise TranspositionException('Cannot translate ' + file_loc + ' to ' +
+                                     'music21 stream')
+    except IndexError:
+        raise TranspositionException('Known unknown error when translating ' +
+                                     file_loc + ' to music21 stream')
+
     tonic = score.analyze('key').tonic
     transpos_interval = interval.Interval(tonic, pitch.Pitch('C'))
-    score.transpose(transpos_interval, inPlace=True)
+    transpos_semitones = transpos_interval.semitones
+
+    for track in piece.tracks:
+        for event in track.events:
+            if event.type == 'NOTE_ON' or event.type == 'NOTE_OFF':
+                event.pitch += transpos_semitones
 
 
 if __name__ == "__main__":
