@@ -2,24 +2,32 @@
 # -*- coding: utf-8 -*-
 
 import sys
+assert sys.version_info >= (3, 4)  # noqa: E402
+
 import os
-import argparse
 import logging
+from argparse import ArgumentParser
+from shutil import which
+from math import inf
+from fractions import Fraction
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from tempfile import gettempdir
+from uuid import uuid4
+from subprocess import run, DEVNULL
 from pathlib import Path
-from music21 import midi, interval, pitch, exceptions21
+from music21 import interval, pitch, exceptions21, converter
 from tqdm import tqdm
 
+
+# Check mscore is accessible (so is installed too)
+MSCORE = 'mscore'
+assert which(MSCORE) is not None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('Preprocessor')
 
 
 class EmptyDataFolderException(Exception):
-    pass
-
-
-class TranspositionException(Exception):
     pass
 
 
@@ -82,37 +90,45 @@ def tqdm_parallel_map(executor, fn, *iterables, **kwargs):
 def process_one(process_args):
     file_loc, args = process_args
 
-    piece = open_midi(file_loc)
+    try:
+        score = open_midi(file_loc)
+    except exceptions21.StreamException:
+        logger.error('Cannot translate %s to music21 stream' % file_loc)
+        return
+    except IndexError:
+        logger.error('Known unknown error when translating %s to music21 \
+                      stream' % file_loc)
+        return
 
     if not args.keep_percussions:
-        filter_out_percussions(piece)
+        filter_out_percussions(score)
 
     if not args.keep_tonic:
-        try:
-            transpose_c(piece, file_loc)
-        except TranspositionException as e:
-            logger.error(e)
-            return
-
-    # TODO: Add below next preprocessing steps
+        transpose_c(score)
 
     # TODO: The purpose of the next line is to check that preprocessing
     # operations are right
-    save_midi(piece, file_loc, args)
+    save_midi(score, file_loc, args)
 
     # TODO: Convert to network format
+    (denominator, longestNote) = detect_time_complexity(score)
+    logger.info('%s: count units per quarter: %s' %
+                (file_loc, str(denominator)))
 
 
 def open_midi(file_loc):
-    piece = midi.MidiFile()
-    piece.open(file_loc)
-    piece.read()
-    piece.close()
+    # A non-user defined name should prevent code injection
+    temp_file = os.path.join(gettempdir(), str(uuid4()) + '.musicxml')
+    run([MSCORE, '-o', temp_file, file_loc],
+        check=True, stdout=DEVNULL, stderr=DEVNULL)
 
-    return piece
+    score = converter.parse(temp_file)
+    os.remove(temp_file)
+
+    return score
 
 
-def save_midi(piece, file_loc, args):
+def save_midi(score, file_loc, args):
     """ if file_loc is '../data/game/mymusic.mid'. The file will be saved in
     <output_folder>/game/mymusic_melody.mid """
 
@@ -136,50 +152,54 @@ def save_midi(piece, file_loc, args):
     output_file_loc = os.path.join(folder, output_file_name)
 
     # Write
-    piece.open(output_file_loc, attrib='wb')
-    piece.write()
-    piece.close()
+    score.write('midi', output_file_loc)
 
 
-def filter_out_percussions(piece):
-    # Keep only tracks that do not contain the channel 10 (percussion)
-    piece.tracks[:] = [t for t in piece.tracks if 10 not in t.getChannels()]
+def filter_out_percussions(score):
+    # Remove the track containing percussions : midi channel 9 (from 0)
+    # or 10 (from 1)
+    for part in score.parts:
+        if part.getInstrument().midiChannel == 9:
+            score.remove(part)
 
 
-def transpose_c(piece, file_loc):
-    try:
-        score = midi.translate.midiFileToStream(piece)
-    except exceptions21.StreamException:
-        raise TranspositionException('Cannot translate ' + file_loc + ' to ' +
-                                     'music21 stream')
-    except IndexError:
-        raise TranspositionException('Known unknown error when translating ' +
-                                     file_loc + ' to music21 stream')
-
+def transpose_c(score):
     tonic = score.analyze('key').tonic
     transpos_interval = interval.Interval(tonic, pitch.Pitch('C'))
-    transpos_semitones = transpos_interval.semitones
 
-    for track in piece.tracks:
-        for event in track.events:
-            if event.type == 'NOTE_ON' or event.type == 'NOTE_OFF':
-                event.pitch += transpos_semitones
+    score.transpose(transpos_interval, inPlace=True)
+
+
+def detect_time_complexity(score):
+    maxTime = -inf
+    denominator = 1
+
+    for curNote in score.recurse().notesAndRests:
+        quarterLength = curNote.duration.quarterLength
+        if quarterLength > maxTime:
+            maxTime = quarterLength
+
+        fraction = Fraction(1, denominator) + Fraction(quarterLength)
+        if fraction.denominator > denominator:  # No simplification
+            denominator = fraction.denominator
+
+    return (denominator, maxTime)
 
 
 if __name__ == "__main__":
-    assert sys.version_info >= (3, 4)
+    parser = ArgumentParser()
 
-    parser = argparse.ArgumentParser()
+    # Mandatory arguments
     parser.add_argument('input_folder', type=str, help='The folder containing \
             the game folders containing *.mid (MIDI) files')
     parser.add_argument('output_folder', type=str, help='The folder that will \
             be provided to the network')
 
+    # Optional arguments
     parser.add_argument('--keep-percussions', dest='keep_percussions',
                         action='store_true', help='Do not remove percussions')
     parser.add_argument('--keep-tonic', dest='keep_tonic', action='store_true',
                         help='Do not transpose to C')
-    parser.set_defaults(keep_percussions=False)
 
     args = parser.parse_args()
 
