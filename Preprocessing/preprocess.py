@@ -6,6 +6,8 @@ assert sys.version_info >= (3, 4)  # noqa: E402
 
 import os
 import logging
+import matplotlib.pyplot as plt
+from matplotlib.ticker import PercentFormatter
 from argparse import ArgumentParser
 from shutil import which
 from math import inf
@@ -13,7 +15,7 @@ from fractions import Fraction
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from tempfile import gettempdir
 from uuid import uuid4
-from subprocess import run, DEVNULL
+from subprocess import run, DEVNULL, CalledProcessError
 from pathlib import Path
 from music21 import interval, pitch, exceptions21, converter
 from tqdm import tqdm
@@ -62,10 +64,15 @@ def scan_mid_files(data_folder):
 
 
 def process_all(files, args):
+    time_steps = {}
     process_args = ((cur_file, args) for cur_file in files)
+
     with ProcessPoolExecutor() as executor:
         for result in tqdm_parallel_map(executor, process_one, process_args):
-            pass
+            if result:
+                time_steps.update(result)
+
+    display_time_step_graph(time_steps)
 
 
 # Thanks https://techoverflow.net/2017/05/18/
@@ -95,11 +102,19 @@ def process_one(process_args):
     except exceptions21.StreamException:
         logger.error('Cannot translate %s to music21 stream' % file_loc)
         return
-    except IndexError:
-        logger.error('Known unknown error when translating %s to music21 \
-                      stream' % file_loc)
+    except CalledProcessError:
+        logger.error('mscore failed to convert %s from midi to musixcml'
+                     % file_loc)
         return
 
+    if args.time_step_graph:
+        (denominator, longestNote) = detect_time_complexity(score)
+        return {file_loc: denominator}
+    else:
+        modify_piece(score, file_loc, args)
+
+
+def modify_piece(score, file_loc, args):
     if not args.keep_percussions:
         filter_out_percussions(score)
 
@@ -111,9 +126,6 @@ def process_one(process_args):
     save_midi(score, file_loc, args)
 
     # TODO: Convert to network format
-    (denominator, longestNote) = detect_time_complexity(score)
-    logger.info('%s: count units per quarter: %s' %
-                (file_loc, str(denominator)))
 
 
 def open_midi(file_loc):
@@ -186,6 +198,32 @@ def detect_time_complexity(score):
     return (denominator, maxTime)
 
 
+def display_time_step_graph(time_steps):
+    data = time_steps.values()
+    countData = len(data)
+
+    fig, ax1 = plt.subplots()
+    ax2 = ax1.twinx()
+    ax2.yaxis.set_major_formatter(PercentFormatter())
+
+    def to_percent(ax1):
+        y1, y2 = ax1.get_ylim()
+        ax2.set_ylim(y1 / countData * 100, y2 / countData * 100)
+
+    ax1.callbacks.connect('ylim_changed', to_percent)
+
+    ax1.hist(data, bins=max(data), cumulative=True, histtype='step')
+    ax1.set_xscale('log')
+    ax1.set_title('Cumulated count of scores (total: ' + str(countData) + ') \
+                   according to time steps')
+    ax1.set_xlabel('Required time steps per 1/4 note')
+    ax1.set_ylabel('Count of scores')
+    ax2.set_ylabel('Relative count of scores')
+    ax2.grid(True)
+
+    plt.show()
+
+
 if __name__ == "__main__":
     parser = ArgumentParser()
 
@@ -200,6 +238,9 @@ if __name__ == "__main__":
                         action='store_true', help='Do not remove percussions')
     parser.add_argument('--keep-tonic', dest='keep_tonic', action='store_true',
                         help='Do not transpose to C')
+    parser.add_argument('--time-step-graph', dest='time_step_graph',
+                        action='store_true', help='Display a cumulative \
+                        histogram of pieces with the required time step')
 
     args = parser.parse_args()
 
