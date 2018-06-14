@@ -1,1 +1,4 @@
 music21
+tqdm
+matplotlib
+numpy

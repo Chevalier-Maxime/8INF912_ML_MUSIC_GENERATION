@@ -2,18 +2,34 @@
 # -*- coding: utf-8 -*-
 
 import sys
-import os
-import argparse
-import logging
-from pathlib import Path
-from music21 import midi, interval, pitch, exceptions21
+assert sys.version_info >= (3, 4)  # noqa: E402
 
+import os
+import logging
+import matplotlib.pyplot as plt
+from matplotlib.ticker import PercentFormatter
+from argparse import ArgumentParser
+from shutil import which
+from math import inf
+from fractions import Fraction
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from tempfile import gettempdir
+from uuid import uuid4
+from subprocess import run, DEVNULL, CalledProcessError
+from pathlib import Path
+from music21 import interval, pitch, exceptions21, converter
+from tqdm import tqdm
+
+
+# Check mscore is accessible (so is installed too)
+MSCORE = 'mscore'
+assert which(MSCORE) is not None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('Preprocessor')
 
 
-class EmptyDataFolder(Exception):
+class EmptyDataFolderException(Exception):
     pass
 
 
@@ -22,7 +38,7 @@ def scan_mid_files(data_folder):
 
     root_dir = os.listdir(data_folder)
     if len(root_dir) == 0:
-        raise EmptyDataFolder()
+        raise EmptyDataFolderException()
 
     for node in root_dir:
         node_absolute = os.path.join(data_folder, node)
@@ -48,45 +64,83 @@ def scan_mid_files(data_folder):
 
 
 def process_all(files, args):
-    for f in files:
-        process_one(f, args)
+    time_steps = {}
+    process_args = ((cur_file, args) for cur_file in files)
+
+    with ProcessPoolExecutor() as executor:
+        for result in tqdm_parallel_map(executor, process_one, process_args):
+            if result:
+                time_steps.update(result)
+
+    display_time_step_graph(time_steps)
 
 
-def process_one(file_loc, args):
-    piece = open_midi(file_loc)
+# Thanks https://techoverflow.net/2017/05/18/
+# how-to-use-concurrent-futures-map-with-a-tqdm-progress-bar/
+def tqdm_parallel_map(executor, fn, *iterables, **kwargs):
+    """
+    Equivalent to executor.map(fn, *iterables),
+    but displays a tqdm-based progress bar.
 
-    if not args.keep_percussions:
-        filter_out_percussions(piece)
+    Does not support timeout or chunksize as executor.submit is used internally
+
+    **kwargs is passed to tqdm.
+    """
+    futures_list = []
+    for iterable in iterables:
+        futures_list += [executor.submit(fn, i) for i in iterable]
+        for f in tqdm(as_completed(futures_list), total=len(futures_list),
+                      **kwargs):
+            yield f.result()
+
+
+def process_one(process_args):
+    file_loc, args = process_args
 
     try:
-        score = midi.translate.midiFileToStream(piece)
+        score = open_midi(file_loc)
     except exceptions21.StreamException:
-        logger.error('No tracks in %s' % file_loc)
+        logger.error('Cannot translate %s to music21 stream' % file_loc)
         return
+    except CalledProcessError:
+        logger.error('mscore failed to convert %s from midi to musixcml'
+                     % file_loc)
+        return
+
+    if args.time_step_graph:
+        (denominator, longestNote) = detect_time_complexity(score)
+        return {file_loc: denominator}
+    else:
+        modify_piece(score, file_loc, args)
+
+
+def modify_piece(score, file_loc, args):
+    if not args.keep_percussions:
+        filter_out_percussions(score)
 
     if not args.keep_tonic:
         transpose_c(score)
 
-    # TODO: Add below next preprocessing steps
-
     # TODO: The purpose of the next line is to check that preprocessing
     # operations are right
-    piece = midi.translate.streamToMidiFile(score)
-    save_midi(piece, file_loc, args)
+    save_midi(score, file_loc, args)
 
     # TODO: Convert to network format
 
 
 def open_midi(file_loc):
-    piece = midi.MidiFile()
-    piece.open(file_loc)
-    piece.read()
-    piece.close()
+    # A non-user defined name should prevent code injection
+    temp_file = os.path.join(gettempdir(), str(uuid4()) + '.musicxml')
+    run([MSCORE, '-o', temp_file, file_loc],
+        check=True, stdout=DEVNULL, stderr=DEVNULL)
 
-    return piece
+    score = converter.parse(temp_file)
+    os.remove(temp_file)
+
+    return score
 
 
-def save_midi(piece, file_loc, args):
+def save_midi(score, file_loc, args):
     """ if file_loc is '../data/game/mymusic.mid'. The file will be saved in
     <output_folder>/game/mymusic_melody.mid """
 
@@ -110,36 +164,83 @@ def save_midi(piece, file_loc, args):
     output_file_loc = os.path.join(folder, output_file_name)
 
     # Write
-    piece.open(output_file_loc, attrib='wb')
-    piece.write()
-    piece.close()
+    score.write('midi', output_file_loc)
 
 
-def filter_out_percussions(piece):
-    # Keep only tracks that do not contain the channel 10 (percussion)
-    piece.tracks[:] = [t for t in piece.tracks if 10 not in t.getChannels()]
+def filter_out_percussions(score):
+    # Remove the track containing percussions : midi channel 9 (from 0)
+    # or 10 (from 1)
+    for part in score.parts:
+        if part.getInstrument().midiChannel == 9:
+            score.remove(part)
 
 
 def transpose_c(score):
     tonic = score.analyze('key').tonic
     transpos_interval = interval.Interval(tonic, pitch.Pitch('C'))
+
     score.transpose(transpos_interval, inPlace=True)
 
 
-if __name__ == "__main__":
-    assert sys.version_info >= (3, 4)
+def detect_time_complexity(score):
+    maxTime = -inf
+    denominator = 1
 
-    parser = argparse.ArgumentParser()
+    for curNote in score.recurse().notesAndRests:
+        quarterLength = curNote.duration.quarterLength
+        if quarterLength > maxTime:
+            maxTime = quarterLength
+
+        fraction = Fraction(1, denominator) + Fraction(quarterLength)
+        if fraction.denominator > denominator:  # No simplification
+            denominator = fraction.denominator
+
+    return (denominator, maxTime)
+
+
+def display_time_step_graph(time_steps):
+    data = time_steps.values()
+    countData = len(data)
+
+    fig, ax1 = plt.subplots()
+    ax2 = ax1.twinx()
+    ax2.yaxis.set_major_formatter(PercentFormatter())
+
+    def to_percent(ax1):
+        y1, y2 = ax1.get_ylim()
+        ax2.set_ylim(y1 / countData * 100, y2 / countData * 100)
+
+    ax1.callbacks.connect('ylim_changed', to_percent)
+
+    ax1.hist(data, bins=max(data), cumulative=True, histtype='step')
+    ax1.set_xscale('log')
+    ax1.set_title('Cumulated count of scores (total: ' + str(countData) + ') \
+                   according to time steps')
+    ax1.set_xlabel('Required time steps per 1/4 note')
+    ax1.set_ylabel('Count of scores')
+    ax2.set_ylabel('Relative count of scores')
+    ax2.grid(True)
+
+    plt.show()
+
+
+if __name__ == "__main__":
+    parser = ArgumentParser()
+
+    # Mandatory arguments
     parser.add_argument('input_folder', type=str, help='The folder containing \
             the game folders containing *.mid (MIDI) files')
     parser.add_argument('output_folder', type=str, help='The folder that will \
             be provided to the network')
 
+    # Optional arguments
     parser.add_argument('--keep-percussions', dest='keep_percussions',
                         action='store_true', help='Do not remove percussions')
     parser.add_argument('--keep-tonic', dest='keep_tonic', action='store_true',
                         help='Do not transpose to C')
-    parser.set_defaults(keep_percussions=False)
+    parser.add_argument('--time-step-graph', dest='time_step_graph',
+                        action='store_true', help='Display a cumulative \
+                        histogram of pieces with the required time step')
 
     args = parser.parse_args()
 
