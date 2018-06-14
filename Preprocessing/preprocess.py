@@ -22,7 +22,11 @@ from tqdm import tqdm
 
 
 # Check mscore is accessible (so is installed too)
-MSCORE = 'mscore'
+
+if os.name =='nt':
+    MSCORE = 'MuseScore.exe'
+else:
+    MSCORE = 'mscore'
 assert which(MSCORE) is not None
 
 logging.basicConfig(level=logging.INFO)
