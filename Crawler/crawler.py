@@ -30,7 +30,7 @@ row_index = 1
 
 rows = soup.find_all("tr")
 
-print("nb lignes : {}".format(len(rows)))
+#print("nb lignes : {}".format(len(rows)))
 while row_index < len(rows):
     row = rows[row_index]
     #On itere sur les lignes
