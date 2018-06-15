@@ -18,15 +18,16 @@ from uuid import uuid4
 from subprocess import run, DEVNULL, CalledProcessError
 from pathlib import Path
 from music21 import interval, pitch, exceptions21, converter
+from music21.analysis.discrete import DiscreteAnalysisException
 from tqdm import tqdm
 
 
-# Check mscore is accessible (so is installed too)
-
-if os.name =='nt':
+if os.name == 'nt':
     MSCORE = 'MuseScore.exe'
 else:
     MSCORE = 'mscore'
+
+# Check mscore is accessible (so is installed too)
 assert which(MSCORE) is not None
 
 logging.basicConfig(level=logging.INFO)
@@ -68,15 +69,20 @@ def scan_mid_files(data_folder):
 
 
 def process_all(files, args):
-    time_steps = {}
+    do_gather_data = args.time_step_graph
+
+    if do_gather_data:
+        time_steps = {}
+
     process_args = ((cur_file, args) for cur_file in files)
 
     with ProcessPoolExecutor() as executor:
         for result in tqdm_parallel_map(executor, process_one, process_args):
-            if result:
+            if do_gather_data and result:
                 time_steps.update(result)
 
-    display_time_step_graph(time_steps)
+    if do_gather_data:
+        display_time_step_graph(time_steps)
 
 
 # Thanks https://techoverflow.net/2017/05/18/
@@ -123,7 +129,11 @@ def modify_piece(score, file_loc, args):
         filter_out_percussions(score)
 
     if not args.keep_tonic:
-        transpose_c(score)
+        try:
+            transpose_c(score)
+        except DiscreteAnalysisException:
+            logger.error('Unable to get key signature for %s' % file_loc)
+            return
 
     # TODO: The purpose of the next line is to check that preprocessing
     # operations are right
@@ -228,7 +238,7 @@ def display_time_step_graph(time_steps):
     plt.show()
 
 
-def get_argument_parser():
+if __name__ == "__main__":
     parser = ArgumentParser()
 
     # Mandatory arguments
@@ -245,18 +255,8 @@ def get_argument_parser():
     parser.add_argument('--time-step-graph', dest='time_step_graph',
                         action='store_true', help='Display a cumulative \
                         histogram of pieces with the required time step')
-    return parser
 
+    args = parser.parse_args()
 
-def main(args):
     mid_files = scan_mid_files(args.input_folder)
     process_all(mid_files, args)
-
-
-if __name__ == "__main__":
-    args = (get_argument_parser()).parse_args()
-    main(args)
-
-    
-
-    

@@ -2,3 +2,6 @@ music21
 tqdm
 matplotlib
 numpy
+pretty_midi
+pandas
+scikit-learn

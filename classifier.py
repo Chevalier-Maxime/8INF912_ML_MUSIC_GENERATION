@@ -130,7 +130,7 @@ def extract_midi_features(path_df):
     logger.info('Start extraction of features')
     logging_info_nbstep = len(path_df.index)-1
     for index, row in path_df.iterrows():
-        #logger.info('Step %d/%d' % (index,logging_info_nbstep))
+        logger.info('Step %d/%d' % (index,logging_info_nbstep))
         features = get_features(row.Path)
         genre = label_dict[row.Genre]
         if features is not None:
