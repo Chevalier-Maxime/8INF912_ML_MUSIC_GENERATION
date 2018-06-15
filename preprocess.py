@@ -237,8 +237,7 @@ def display_time_step_graph(time_steps):
 
     plt.show()
 
-
-if __name__ == "__main__":
+def get_argument_parser():
     parser = ArgumentParser()
 
     # Mandatory arguments
@@ -255,8 +254,18 @@ if __name__ == "__main__":
     parser.add_argument('--time-step-graph', dest='time_step_graph',
                         action='store_true', help='Display a cumulative \
                         histogram of pieces with the required time step')
+    return parser
 
-    args = parser.parse_args()
 
+def main(args):
     mid_files = scan_mid_files(args.input_folder)
     process_all(mid_files, args)
+
+
+if __name__ == "__main__":
+    args = (get_argument_parser()).parse_args()
+    main(args)
+
+    
+
+    
