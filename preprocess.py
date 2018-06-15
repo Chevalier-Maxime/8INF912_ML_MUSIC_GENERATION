@@ -17,7 +17,7 @@ from tempfile import gettempdir
 from uuid import uuid4
 from subprocess import run, DEVNULL, CalledProcessError
 from pathlib import Path
-from music21 import interval, pitch, exceptions21, converter
+from music21 import interval, pitch, exceptions21, converter, chord
 from music21.analysis.discrete import DiscreteAnalysisException
 from tqdm import tqdm
 
@@ -69,20 +69,22 @@ def scan_mid_files(data_folder):
 
 
 def process_all(files, args):
-    do_gather_data = args.time_step_graph
+    do_gather_data = args.stats
 
     if do_gather_data:
-        time_steps = {}
+        stats = {}
 
     process_args = ((cur_file, args) for cur_file in files)
 
     with ProcessPoolExecutor() as executor:
         for result in tqdm_parallel_map(executor, process_one, process_args):
             if do_gather_data and result:
-                time_steps.update(result)
+                stats.update(result)
 
     if do_gather_data:
-        display_time_step_graph(time_steps)
+        stats = flatten(stats)
+        display_time_step_graph(stats['denominator'])
+        print(compile_stats(stats))
 
 
 # Thanks https://techoverflow.net/2017/05/18/
@@ -104,6 +106,27 @@ def tqdm_parallel_map(executor, fn, *iterables, **kwargs):
             yield f.result()
 
 
+def flatten(dic):
+    res = {}
+
+    for fileLoc in dic.keys():
+        for stat in dic[fileLoc].keys():
+            if res.get(stat) is None:
+                res[stat] = []
+
+            var = dic[fileLoc][stat]
+            res[stat].append(var)
+
+    return res
+
+
+def compile_stats(stats):
+    return {'denominator': max(stats['denominator']),
+            'longestNote': max(stats['longestNote']),
+            'minOctave': min(stats['minOctave']),
+            'maxOctave': max(stats['maxOctave'])}
+
+
 def process_one(process_args):
     file_loc, args = process_args
 
@@ -117,14 +140,30 @@ def process_one(process_args):
                      % file_loc)
         return
 
-    if args.time_step_graph:
-        (denominator, longestNote) = detect_time_complexity(score)
-        return {file_loc: denominator}
+    if args.stats:
+        return {file_loc: stats(score)}
     else:
         modify_piece(score, file_loc, args)
 
 
+def stats(score):
+    (denominator, longestNote) = detect_time_complexity(score)
+    (minOctave, maxOctave) = detect_min_max_octaves(score)
+
+    dic = {'denominator': denominator,
+           'longestNote': longestNote,
+           'minOctave': minOctave,
+           'maxOctave': maxOctave}
+
+    return dic
+
+
 def modify_piece(score, file_loc, args):
+    # Skip if too complex
+    (denominator, timeMax) = detect_time_complexity(score)
+    if denominator > args.max_time_step_per_quarter:
+        return
+
     if not args.keep_percussions:
         filter_out_percussions(score)
 
@@ -134,6 +173,12 @@ def modify_piece(score, file_loc, args):
         except DiscreteAnalysisException:
             logger.error('Unable to get key signature for %s' % file_loc)
             return
+
+    if not args.keep_octaves:
+        remove_bass(score)
+
+    # Flatten (merge into 1 track)
+    score = score.flat
 
     # TODO: The purpose of the next line is to check that preprocessing
     # operations are right
@@ -196,6 +241,17 @@ def transpose_c(score):
     score.transpose(transpos_interval, inPlace=True)
 
 
+def remove_bass(score):
+    for note in score.recurse().notes:
+        if isinstance(note, chord.Chord):
+            for chordNote in note:
+                if chordNote.octave < 3:
+                    chordNote.octave = 3
+
+        elif note.octave < 3:
+            note.octave = 3
+
+
 def detect_time_complexity(score):
     maxTime = -inf
     denominator = 1
@@ -212,9 +268,33 @@ def detect_time_complexity(score):
     return (denominator, maxTime)
 
 
+def detect_min_max_octaves(score):
+    minMaxOctaves = (inf, -inf)
+
+    for curNote in score.recurse().notes:
+        if isinstance(curNote, chord.Chord):
+            for curChordNote in curNote:
+                minMaxOctaves = update_min_max(minMaxOctaves,
+                                               curChordNote.octave)
+        else:
+            minMaxOctaves = update_min_max(minMaxOctaves, curNote.octave)
+
+    return minMaxOctaves
+
+
+def update_min_max(minMaxVal, val):
+    (minVal, maxVal) = minMaxVal
+
+    if val < minVal:
+        minVal = val
+    elif val > maxVal:
+        maxVal = val
+
+    return (minVal, maxVal)
+
+
 def display_time_step_graph(time_steps):
-    data = time_steps.values()
-    countData = len(data)
+    countData = len(time_steps)
 
     fig, ax1 = plt.subplots()
     ax2 = ax1.twinx()
@@ -226,7 +306,8 @@ def display_time_step_graph(time_steps):
 
     ax1.callbacks.connect('ylim_changed', to_percent)
 
-    ax1.hist(data, bins=max(data), cumulative=True, histtype='step')
+    ax1.hist(time_steps, bins=max(time_steps), cumulative=True,
+             histtype='step')
     ax1.set_xscale('log')
     ax1.set_title('Cumulated count of scores (total: ' + str(countData) + ') \
                    according to time steps')
@@ -236,6 +317,7 @@ def display_time_step_graph(time_steps):
     ax2.grid(True)
 
     plt.show()
+
 
 def get_argument_parser():
     parser = ArgumentParser()
@@ -251,9 +333,16 @@ def get_argument_parser():
                         action='store_true', help='Do not remove percussions')
     parser.add_argument('--keep-tonic', dest='keep_tonic', action='store_true',
                         help='Do not transpose to C')
-    parser.add_argument('--time-step-graph', dest='time_step_graph',
-                        action='store_true', help='Display a cumulative \
-                        histogram of pieces with the required time step')
+    parser.add_argument('--keep-octaves', dest='keep_octaves',
+                        action='store_true', help='Do not remove octave < 3')
+    parser.add_argument('--stats', dest='stats', action='store_true',
+                        help='Display some statistics')
+    parser.add_argument('--max-time-step-per-quarter', type=int,
+                        dest='max_time_step_per_quarter', action='store',
+                        default=4, help='Skipping pieces requiring more than \
+                        the specified value as time steps per quarter \
+                        (default: %(default)s)')
+
     return parser
 
 
@@ -265,7 +354,3 @@ def main(args):
 if __name__ == "__main__":
     args = (get_argument_parser()).parse_args()
     main(args)
-
-    
-
-    
