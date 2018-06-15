@@ -180,9 +180,8 @@ def modify_piece(score, file_loc, args):
     # Flatten (merge into 1 track)
     score = score.flat
 
-    # TODO: The purpose of the next line is to check that preprocessing
-    # operations are right
-    save_midi(score, file_loc, args)
+    if args.debug_output_midi:
+        save_midi(score, file_loc, args)
 
     # TODO: Convert to network format
 
@@ -342,6 +341,9 @@ def get_argument_parser():
                         default=4, help='Skipping pieces requiring more than \
                         the specified value as time steps per quarter \
                         (default: %(default)s)')
+    parser.add_argument('--debug-output-midi', dest='debug_output_midi',
+                        action='store_true', help='Save midi files before \
+                        translation to network format')
 
     return parser
 
