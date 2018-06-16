@@ -7,6 +7,8 @@ assert sys.version_info >= (3, 4)  # noqa: E402
 import os
 import logging
 import matplotlib.pyplot as plt
+import numpy as np
+from math import ceil
 from matplotlib.ticker import PercentFormatter
 from argparse import ArgumentParser
 from shutil import which
@@ -22,6 +24,7 @@ from music21.analysis.discrete import DiscreteAnalysisException
 from tqdm import tqdm
 
 
+# If Windows
 if os.name == 'nt':
     MSCORE = 'MuseScore.exe'
 else:
@@ -36,6 +39,11 @@ logger = logging.getLogger('Preprocessor')
 
 class EmptyDataFolderException(Exception):
     pass
+
+
+class IncompatibleTimeSteps(Exception):
+    def __init__(self, tried_time_step):
+        self.time_step = tried_time_step
 
 
 def scan_mid_files(data_folder):
@@ -165,11 +173,11 @@ def modify_piece(score, file_loc, args):
         return
 
     if not args.keep_percussions:
-        filter_out_percussions(score)
+        remove_percussions(score)
 
     if not args.keep_tonic:
         try:
-            transpose_c(score)
+            transpose_to_c_tonic(score)
         except DiscreteAnalysisException:
             logger.error('Unable to get key signature for %s' % file_loc)
             return
@@ -184,6 +192,7 @@ def modify_piece(score, file_loc, args):
         save_midi(score, file_loc, args)
 
     # TODO: Convert to network format
+    convert_score_to_network_format(score, args)
 
 
 def open_midi(file_loc):
@@ -225,7 +234,7 @@ def save_midi(score, file_loc, args):
     score.write('midi', output_file_loc)
 
 
-def filter_out_percussions(score):
+def remove_percussions(score):
     # Remove the track containing percussions : midi channel 9 (from 0)
     # or 10 (from 1)
     for part in score.parts:
@@ -233,7 +242,7 @@ def filter_out_percussions(score):
             score.remove(part)
 
 
-def transpose_c(score):
+def transpose_to_c_tonic(score):
     tonic = score.analyze('key').tonic
     transpos_interval = interval.Interval(tonic, pitch.Pitch('C'))
 
@@ -249,6 +258,98 @@ def remove_bass(score):
 
         elif note.octave < 3:
             note.octave = 3
+
+
+def convert_score_to_network_format(score, args):
+    lengthScore = ceil(length_timesteps(score, args)) + 1  # To add OFF event
+    lengthInOutput = 7 * 12 * 2
+
+    # First dim : One time step
+    # Second dim : 7 octaves * 12 notes * 2 events (on, off)
+    data = np.zeros((lengthScore, lengthInOutput))
+
+    for note in score.recurse().notes:
+        offsetTimeNoteOn = offset_time(note, args)
+        offsetPitchNoteOn = offset_pitch_on(note)
+
+        offsetTimeNoteOff = offset_time_end(note, args)
+        offsetPitchNoteOff = offset_pitch_off(note)
+
+        # For consistency each note on must be followed by a note off
+        # But an issue, can appear. What if:
+        # 1 - The same note happen in the same time and don't have the same
+        #     length?
+        # 2 - The current note happen between another same note on/off events?
+        # A note on event must be triggered at the end of the first note played
+        # Examples (S : Start/Note ON ; E : End/Note OFF) :
+        # _S_S____ must become  _S_S____
+        # _____E_E              ___E___E
+
+        # Note ON always applies
+        data[offsetTimeNoteOn][offsetPitchNoteOn] = True
+
+        otherOffsetTimeNoteOff = get_other_time_end(data, note)
+        if not otherOffsetTimeNoteOff:
+            data[offsetTimeNoteOff][offsetPitchNoteOff] = True
+        else:  # Conflict
+            data[offsetTimeNoteOn][offsetPitchNoteOff] = True
+
+            # otherTimeNoteOff is already set, so we have to replace it if
+            # offsetTimeNoteOff > otherTimeNoteOff
+            if offsetTimeNoteOff > otherOffsetTimeNoteOff:
+                data[otherOffsetTimeNoteOff][offsetPitchNoteOff] = False
+                data[offsetTimeNoteOff][offsetPitchNoteOff] = True
+
+    return data
+
+
+def get_other_time_end(data, note):
+    return None  # TODO
+
+
+def length_timesteps(obj, args):
+    length = obj.quarterLength * args.max_time_step_per_quarter
+
+    if length % 1 != 0.0:  # if length is decimal, there is an issue
+        raise IncompatibleTimeSteps(length)
+
+    return int(length)
+
+
+def offset_time(note, args):
+    offset = note.offset * args.max_time_step_per_quarter
+
+    if offset % 1 != 0.0:  # If offset is decimal, there is an issue
+        raise IncompatibleTimeSteps(offset)
+
+    return int(offset)
+
+
+def offset_time_end(note, args):
+    return offset_time(note, args) + length_timesteps(note, args)
+
+
+def offset_pitch_on(note):
+    """ Note ON are pair offsets """
+    return offset_octave(note) + offset_in_octave(note)
+
+
+def offset_pitch_off(note):
+    """ Note OFF are impair offsets """
+    return offset_octave(note) + offset_in_octave(note) + 1
+
+
+def offset_octave(note):
+    return (note.octave - 3) * 24
+
+
+def offset_in_octave(note):
+    return semitones(note) * 2
+
+
+def semitones(note):
+    refPitch = pitch.Pitch('C3')
+    return interval.notesToChromatic(refPitch, note.pitch).semitones % 12
 
 
 def detect_time_complexity(score):
