@@ -8,6 +8,7 @@ import os
 import logging
 import matplotlib.pyplot as plt
 import numpy as np
+import numbers
 from math import ceil
 from matplotlib.ticker import PercentFormatter
 from argparse import ArgumentParser
@@ -261,6 +262,8 @@ def remove_bass(score):
 
 
 def convert_score_to_network_format(score, args):
+    """ score must be flatten """
+
     lengthScore = ceil(length_timesteps(score, args)) + 1  # To add OFF event
     lengthInOutput = 7 * 12 * 2
 
@@ -288,27 +291,43 @@ def convert_score_to_network_format(score, args):
         # Note ON always applies
         data[offsetTimeNoteOn][offsetPitchNoteOn] = True
 
-        otherOffsetTimeNoteOff = get_other_time_end(data, note)
-        if not otherOffsetTimeNoteOff:
+        # Detect conflict
+        offsetTimeOtherNoteOff = get_other_time_end(data, offsetTimeNoteOn,
+                                                    offsetPitchNoteOff, args)
+        if not offsetTimeOtherNoteOff:
             data[offsetTimeNoteOff][offsetPitchNoteOff] = True
-        else:  # Conflict
+        else:
             data[offsetTimeNoteOn][offsetPitchNoteOff] = True
 
-            # otherTimeNoteOff is already set, so we have to replace it if
-            # offsetTimeNoteOff > otherTimeNoteOff
-            if offsetTimeNoteOff > otherOffsetTimeNoteOff:
-                data[otherOffsetTimeNoteOff][offsetPitchNoteOff] = False
-                data[offsetTimeNoteOff][offsetPitchNoteOff] = True
+            offsetTimeConflictEndNoteOff = max(offsetTimeNoteOff,
+                                               offsetTimeOtherNoteOff)
+            if offsetTimeOtherNoteOff != offsetTimeConflictEndNoteOff:
+                data[offsetTimeOtherNoteOff][offsetPitchNoteOff] = False
+                data[offsetTimeConflictEndNoteOff][offsetPitchNoteOff] = True
 
     return data
 
 
-def get_other_time_end(data, note):
-    return None  # TODO
+def get_other_time_end(data, offsetTimeNoteOn, offsetPitchNoteOff, args):
+    # Prevent for going beyond 6 quarter notes are the end of the score
+    max_timesteps = min(offsetTimeNoteOn + length_timesteps(6, args),
+                        len(data))
+
+    # TODO: For now, we suppose 6 the maximum note length
+    for curOffset in range(offsetTimeNoteOn, max_timesteps):
+        if data[curOffset][offsetPitchNoteOff] == 1:
+            return curOffset
+
+    return None
 
 
 def length_timesteps(obj, args):
-    length = obj.quarterLength * args.max_time_step_per_quarter
+    if isinstance(obj, numbers.Real):
+        quarterLength = obj
+    else:
+        quarterLength = obj.quarterLength
+
+    length = quarterLength * args.max_time_step_per_quarter
 
     if length % 1 != 0.0:  # if length is decimal, there is an issue
         raise IncompatibleTimeSteps(length)
