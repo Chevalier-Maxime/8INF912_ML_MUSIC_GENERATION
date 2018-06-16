@@ -8,6 +8,9 @@
 
 # Inspired by https://github.com/sandershihacker/midi-classification-tutorial/blob/master/midi_classifier.ipynb
 
+import sys
+assert sys.version_info <= (2, 7)
+
 from argparse import ArgumentParser
 import numpy as np
 import pandas as pd
