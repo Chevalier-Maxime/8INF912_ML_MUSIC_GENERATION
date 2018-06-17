@@ -9,7 +9,9 @@ import logging
 import matplotlib.pyplot as plt
 import numpy as np
 import numbers
-from math import ceil
+import pickle
+import gzip
+from math import ceil, floor
 from matplotlib.ticker import PercentFormatter
 from argparse import ArgumentParser
 from shutil import which
@@ -20,9 +22,13 @@ from tempfile import gettempdir
 from uuid import uuid4
 from subprocess import run, DEVNULL, CalledProcessError
 from pathlib import Path
-from music21 import interval, pitch, exceptions21, converter
-from music21.analysis.discrete import DiscreteAnalysisException
+from music21 import exceptions21, converter
+from music21.interval import Interval, notesToChromatic
+from music21.pitch import Pitch
 from music21.chord import Chord
+from music21.note import Note
+from music21.stream import Stream
+from music21.analysis.discrete import DiscreteAnalysisException
 from tqdm import tqdm
 
 
@@ -79,22 +85,24 @@ def scan_mid_files(data_folder):
 
 
 def process_all(files, args):
-    do_gather_data = args.stats
-
-    if do_gather_data:
-        stats = {}
-
+    data = {}
     process_args = ((cur_file, args) for cur_file in files)
 
     with ProcessPoolExecutor() as executor:
         for result in tqdm_parallel_map(executor, process_one, process_args):
-            if do_gather_data and result:
-                stats.update(result)
+            if result:
+                data.update(result)
 
-    if do_gather_data:
-        stats = flatten(stats)
-        display_time_step_graph(stats['denominator'])
+    data = flatten(data)
+
+    if args.stats:
+        display_time_step_graph(data['denominator'])
         print(compile_stats(stats))
+    else:
+        raw_data = np.array(data['raw_data'])
+        output_file_loc = os.path.join(args.output_folder, 'raw.dat')
+        with gzip.open(output_file_loc, 'wb') as f:
+            raw_data = pickle.dump(raw_data, f)
 
 
 # Thanks https://techoverflow.net/2017/05/18/
@@ -139,21 +147,23 @@ def compile_stats(stats):
 
 def process_one(process_args):
     file_loc, args = process_args
+    retDic = {file_loc: None}
 
     try:
         score = open_midi(file_loc)
+        if args.stats:
+            retDic[file_loc] = stats(score)
+        else:
+            raw_data = modify_piece(score, file_loc, args)
+            retDic[file_loc] = {'raw_data': raw_data}
+
     except exceptions21.StreamException:
         logger.error('Cannot translate %s to music21 stream' % file_loc)
-        return
     except CalledProcessError:
         logger.error('mscore failed to convert %s from midi to musixcml'
                      % file_loc)
-        return
-
-    if args.stats:
-        return {file_loc: stats(score)}
-    else:
-        modify_piece(score, file_loc, args)
+    finally:
+        return retDic
 
 
 def stats(score):
@@ -190,17 +200,20 @@ def modify_piece(score, file_loc, args):
     # Flatten (merge into 1 track)
     score = score.flat
 
-    if args.debug_output_midi:
-        save_midi(score, file_loc, args)
-
-    # TODO: Convert to network format
+    # Convert to network format
     try:
-        convert_score_to_network_format(score, args)
+        raw_data = convert_score_to_network_format(score, args)
     except IncompatibleTimeSteps as e:
         logger.error('Cannot represent %s duration with %d time steps for %s' %
                      (str(e.time_step), args.max_time_step_per_quarter,
                       file_loc))
         return
+
+    if args.debug_output_midi:
+        score = convert_score_from_network_format(raw_data, args)
+        save_midi(score, file_loc, args)
+
+    return raw_data
 
 
 def open_midi(file_loc):
@@ -252,7 +265,7 @@ def remove_percussions(score):
 
 def transpose_to_c_tonic(score):
     tonic = score.analyze('key').tonic
-    transpos_interval = interval.Interval(tonic, pitch.Pitch('C'))
+    transpos_interval = Interval(tonic, Pitch('C'))
 
     score.transpose(transpos_interval, inPlace=True)
 
@@ -271,7 +284,7 @@ def remove_bass(score):
 def convert_score_to_network_format(score, args):
     """ score must be flatten """
 
-    lengthScore = ceil(length_timesteps(score, args)) + 1  # To add OFF event
+    lengthScore = ceil(time_to_timesteps(score, args)) + 1  # To add OFF event
     lengthInOutput = 7 * 12 * 2
 
     # First dim : One time step
@@ -310,8 +323,8 @@ def add_note(data, note, args):
     data[offsetTimeNoteOn][offsetPitchNoteOn] = True
 
     # Detect conflict
-    offsetTimeOtherNoteOff = get_other_time_end(data, offsetTimeNoteOn,
-                                                offsetPitchNoteOff, args)
+    offsetTimeOtherNoteOff = get_time_end(data, offsetTimeNoteOn,
+                                          offsetPitchNoteOff, args)
     if not offsetTimeOtherNoteOff:
         data[offsetTimeNoteOff][offsetPitchNoteOff] = True
     else:
@@ -324,9 +337,38 @@ def add_note(data, note, args):
             data[offsetTimeConflictEndNoteOff][offsetPitchNoteOff] = True
 
 
-def get_other_time_end(data, offsetTimeNoteOn, offsetPitchNoteOff, args):
+def convert_score_from_network_format(raw_data, args):
+    score = Stream()
+
+    for timestep in range(0, len(raw_data)):
+        for event in range(0, len(raw_data[timestep])):
+            if raw_data[timestep][event] == 1 and offset_pitch_is_on(event):
+                pitch = offset_to_pitch(event)
+                offset_off = offset_pitch_on_to_off(event)
+
+                offset_time = timesteps_to_time(timestep, args)
+                offset_timestep_end = get_time_end(raw_data, event,
+                                                   offset_off, args)
+                if not offset_timestep_end:
+                    logger.warning('End event missing. Skipping note...')
+                    continue
+
+                length_timestep = offset_timestep_end - timestep
+                length = timesteps_to_time(length_timestep, args)
+
+                note = Note(pitch)
+                note.offset = offset_time
+                note.quarterLength = length
+
+                score.insert(note, ignoreSort=True)
+
+    score.sort()
+    return score
+
+
+def get_time_end(data, offsetTimeNoteOn, offsetPitchNoteOff, args):
     # Prevent for going beyond 6 quarter notes are the end of the score
-    max_timesteps = min(offsetTimeNoteOn + length_timesteps(6, args),
+    max_timesteps = min(offsetTimeNoteOn + time_to_timesteps(6, args),
                         len(data))
 
     # TODO: For now, we suppose 6 the maximum note length
@@ -337,7 +379,7 @@ def get_other_time_end(data, offsetTimeNoteOn, offsetPitchNoteOff, args):
     return None
 
 
-def length_timesteps(obj, args):
+def time_to_timesteps(obj, args):
     if isinstance(obj, numbers.Real):
         quarterLength = obj
     else:
@@ -351,6 +393,10 @@ def length_timesteps(obj, args):
     return int(length)
 
 
+def timesteps_to_time(timesteps, args):
+    return timesteps / args.max_time_step_per_quarter
+
+
 def offset_time(note, args):
     offset = note.offset * args.max_time_step_per_quarter
 
@@ -361,7 +407,7 @@ def offset_time(note, args):
 
 
 def offset_time_end(note, args):
-    return offset_time(note, args) + length_timesteps(note, args)
+    return offset_time(note, args) + time_to_timesteps(note, args)
 
 
 def offset_pitch_on(note):
@@ -369,9 +415,26 @@ def offset_pitch_on(note):
     return offset_octave(note) + offset_in_octave(note)
 
 
+def offset_pitch_is_on(offset):
+    return (offset % 2) == 0
+
+
 def offset_pitch_off(note):
     """ Note OFF are impair offsets """
     return offset_octave(note) + offset_in_octave(note) + 1
+
+
+def offset_pitch_is_off(offset):
+    return (offset % 2) == 1
+
+
+def offset_pitch_on_to_off(offset):
+    return offset + 1
+
+
+def offset_to_pitch(offset):
+    p = Pitch('C3')
+    return p.transpose(floor(offset / 2))
 
 
 def offset_octave(note):
@@ -383,8 +446,8 @@ def offset_in_octave(note):
 
 
 def semitones(note):
-    refPitch = pitch.Pitch('C3')
-    return interval.notesToChromatic(refPitch, note.pitch).semitones % 12
+    refPitch = Pitch('C3')
+    return notesToChromatic(refPitch, note.pitch).semitones % 12
 
 
 def detect_time_complexity(score):
