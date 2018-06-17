@@ -20,8 +20,9 @@ from tempfile import gettempdir
 from uuid import uuid4
 from subprocess import run, DEVNULL, CalledProcessError
 from pathlib import Path
-from music21 import interval, pitch, exceptions21, converter, chord
+from music21 import interval, pitch, exceptions21, converter
 from music21.analysis.discrete import DiscreteAnalysisException
+from music21.chord import Chord
 from tqdm import tqdm
 
 
@@ -193,7 +194,13 @@ def modify_piece(score, file_loc, args):
         save_midi(score, file_loc, args)
 
     # TODO: Convert to network format
-    convert_score_to_network_format(score, args)
+    try:
+        convert_score_to_network_format(score, args)
+    except IncompatibleTimeSteps as e:
+        logger.error('Cannot represent %s duration with %d time steps for %s' %
+                     (str(e.time_step), args.max_time_step_per_quarter,
+                      file_loc))
+        return
 
 
 def open_midi(file_loc):
@@ -252,7 +259,7 @@ def transpose_to_c_tonic(score):
 
 def remove_bass(score):
     for note in score.recurse().notes:
-        if isinstance(note, chord.Chord):
+        if isinstance(note, Chord):
             for chordNote in note:
                 if chordNote.octave < 3:
                     chordNote.octave = 3
@@ -272,40 +279,49 @@ def convert_score_to_network_format(score, args):
     data = np.zeros((lengthScore, lengthInOutput))
 
     for note in score.recurse().notes:
-        offsetTimeNoteOn = offset_time(note, args)
-        offsetPitchNoteOn = offset_pitch_on(note)
+        if isinstance(note, Chord):
+            for subNote in note:
+                add_note(data, subNote, args)
 
-        offsetTimeNoteOff = offset_time_end(note, args)
-        offsetPitchNoteOff = offset_pitch_off(note)
-
-        # For consistency each note on must be followed by a note off
-        # But an issue, can appear. What if:
-        # 1 - The same note happen in the same time and don't have the same
-        #     length?
-        # 2 - The current note happen between another same note on/off events?
-        # A note on event must be triggered at the end of the first note played
-        # Examples (S : Start/Note ON ; E : End/Note OFF) :
-        # _S_S____ must become  _S_S____
-        # _____E_E              ___E___E
-
-        # Note ON always applies
-        data[offsetTimeNoteOn][offsetPitchNoteOn] = True
-
-        # Detect conflict
-        offsetTimeOtherNoteOff = get_other_time_end(data, offsetTimeNoteOn,
-                                                    offsetPitchNoteOff, args)
-        if not offsetTimeOtherNoteOff:
-            data[offsetTimeNoteOff][offsetPitchNoteOff] = True
         else:
-            data[offsetTimeNoteOn][offsetPitchNoteOff] = True
-
-            offsetTimeConflictEndNoteOff = max(offsetTimeNoteOff,
-                                               offsetTimeOtherNoteOff)
-            if offsetTimeOtherNoteOff != offsetTimeConflictEndNoteOff:
-                data[offsetTimeOtherNoteOff][offsetPitchNoteOff] = False
-                data[offsetTimeConflictEndNoteOff][offsetPitchNoteOff] = True
+            add_note(data, note, args)
 
     return data
+
+
+def add_note(data, note, args):
+    offsetTimeNoteOn = offset_time(note, args)
+    offsetPitchNoteOn = offset_pitch_on(note)
+
+    offsetTimeNoteOff = offset_time_end(note, args)
+    offsetPitchNoteOff = offset_pitch_off(note)
+
+    # For consistency each note on must be followed by a note off
+    # But an issue, can appear. What if:
+    # 1 - The same note happen in the same time and don't have the same
+    #     length?
+    # 2 - The current note happen between another same note on/off events?
+    # A note on event must be triggered at the end of the first note played
+    # Examples (S : Start/Note ON ; E : End/Note OFF) :
+    # _S_S____ must become  _S_S____
+    # _____E_E              ___E___E
+
+    # Note ON always applies
+    data[offsetTimeNoteOn][offsetPitchNoteOn] = True
+
+    # Detect conflict
+    offsetTimeOtherNoteOff = get_other_time_end(data, offsetTimeNoteOn,
+                                                offsetPitchNoteOff, args)
+    if not offsetTimeOtherNoteOff:
+        data[offsetTimeNoteOff][offsetPitchNoteOff] = True
+    else:
+        data[offsetTimeNoteOn][offsetPitchNoteOff] = True
+
+        offsetTimeConflictEndNoteOff = max(offsetTimeNoteOff,
+                                           offsetTimeOtherNoteOff)
+        if offsetTimeOtherNoteOff != offsetTimeConflictEndNoteOff:
+            data[offsetTimeOtherNoteOff][offsetPitchNoteOff] = False
+            data[offsetTimeConflictEndNoteOff][offsetPitchNoteOff] = True
 
 
 def get_other_time_end(data, offsetTimeNoteOn, offsetPitchNoteOff, args):
@@ -391,7 +407,7 @@ def detect_min_max_octaves(score):
     minMaxOctaves = (inf, -inf)
 
     for curNote in score.recurse().notes:
-        if isinstance(curNote, chord.Chord):
+        if isinstance(curNote, Chord):
             for curChordNote in curNote:
                 minMaxOctaves = update_min_max(minMaxOctaves,
                                                curChordNote.octave)
