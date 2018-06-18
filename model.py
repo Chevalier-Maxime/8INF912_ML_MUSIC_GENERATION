@@ -4,19 +4,18 @@ from keras.layers.recurrent import LSTM
 import numpy as np
 
 
-def build_model(corpus, val_indices, max_len, N_epochs=128):
+def build_model(corpus, max_len, epochs, batch_size):
 
-    # pas encore trop certain de ça, ou de quoi que ce soit en fait
-    timestep = 100000
-    dims = 168
+    # The in/output size is the same for each sample
+    vectorSize = len(corpus[0][0])
 
     # 2 hidden layer LSTM
     model = Sequential()
-    model.add(LSTM(128, return_sequences=True, input_shape=(timestep, dims)))
+    model.add(LSTM(128, return_sequences=True, input_shape=(max_len, vectorSize)))
     model.add(Dropout(0.2))
     model.add(LSTM(128, return_sequences=False))
     model.add(Dropout(0.2))
-    model.add(Dense(N_values))
+    model.add(Dense(vectorSize))
     model.add(Activation('softmax'))
 
     model.compile(loss='categorical_crossentropy', optimizer='rmsprop', metrics=['accuracy'])
