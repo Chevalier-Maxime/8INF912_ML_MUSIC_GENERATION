@@ -5,3 +5,6 @@ numpy
 pretty_midi
 pandas
 scikit-learn
+keras
+tensorflow
+h5py

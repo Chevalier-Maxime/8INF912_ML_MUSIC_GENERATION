@@ -6,29 +6,25 @@ assert sys.version_info >= (3, 4)  # noqa: E402
 
 import os
 import logging
-import matplotlib.pyplot as plt
 import numpy as np
-import numbers
 import pickle
 import gzip
-from math import ceil, floor
-from matplotlib.ticker import PercentFormatter
+from stats import compile_stats, stats, detect_time_complexity, \
+                  display_time_step_graph
+from netformat import convert_score_to_network_format,   \
+                      convert_score_from_network_format, \
+                      IncompatibleTimeSteps
 from argparse import ArgumentParser
 from shutil import which
-from math import inf
-from fractions import Fraction
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from tempfile import gettempdir
 from uuid import uuid4
 from subprocess import run, DEVNULL, CalledProcessError
 from pathlib import Path
 from music21 import exceptions21, converter
-from music21.interval import Interval, notesToChromatic
+from music21.interval import Interval
 from music21.pitch import Pitch
 from music21.chord import Chord
-from music21.note import Note
-from music21.stream import Stream
-from music21.tie import Tie
 from music21.analysis.discrete import DiscreteAnalysisException
 from tqdm import tqdm
 
@@ -48,11 +44,6 @@ logger = logging.getLogger('Preprocessor')
 
 class EmptyDataFolderException(Exception):
     pass
-
-
-class IncompatibleTimeSteps(Exception):
-    def __init__(self, tried_time_step):
-        self.time_step = tried_time_step
 
 
 def scan_mid_files(data_folder):
@@ -97,7 +88,7 @@ def process_all(files, args):
 
     if args.stats:
         display_time_step_graph(data['denominator'])
-        print(compile_stats(stats))
+        print(compile_stats(data))
     else:
         raw_data = np.array(data['raw_data'])
         output_file_loc = os.path.join(args.output_folder, 'raw.dat')
@@ -128,6 +119,9 @@ def flatten(dic):
     res = {}
 
     for fileLoc in dic.keys():
+        if dic[fileLoc] is None:
+            continue
+
         for stat in dic[fileLoc].keys():
             if res.get(stat) is None:
                 res[stat] = []
@@ -136,13 +130,6 @@ def flatten(dic):
             res[stat].append(var)
 
     return res
-
-
-def compile_stats(stats):
-    return {'denominator': max(stats['denominator']),
-            'longestNote': max(stats['longestNote']),
-            'minOctave': min(stats['minOctave']),
-            'maxOctave': max(stats['maxOctave'])}
 
 
 def process_one(process_args):
@@ -166,22 +153,12 @@ def process_one(process_args):
     return retDic
 
 
-def stats(score):
-    (denominator, longestNote) = detect_time_complexity(score)
-    (minOctave, maxOctave) = detect_min_max_octaves(score)
-
-    dic = {'denominator': denominator,
-           'longestNote': longestNote,
-           'minOctave': minOctave,
-           'maxOctave': maxOctave}
-
-    return dic
-
-
 def modify_piece(score, file_loc, args):
+    tspq = args.max_time_step_per_quarter
+
     # Skip if too complex
     (denominator, time_max) = detect_time_complexity(score)
-    if denominator > args.max_time_step_per_quarter:
+    if denominator > tspq:
         return
 
     if not args.keep_percussions:
@@ -202,7 +179,7 @@ def modify_piece(score, file_loc, args):
 
     # Convert to network format
     try:
-        raw_data = convert_score_to_network_format(score, args, time_max)
+        raw_data = convert_score_to_network_format(score, tspq, time_max)
     except IncompatibleTimeSteps as e:
         logger.error('Cannot represent %s duration with %d time steps for %s' %
                      (str(e.time_step), args.max_time_step_per_quarter,
@@ -210,7 +187,7 @@ def modify_piece(score, file_loc, args):
         return
 
     if args.debug_output_midi:
-        score = convert_score_from_network_format(raw_data, args, time_max)
+        score = convert_score_from_network_format(raw_data, tspq, time_max)
         save_midi(score, file_loc, args)
 
     return raw_data
@@ -279,255 +256,6 @@ def remove_bass(score):
 
         elif note.octave < 3:
             note.octave = 3
-
-
-def convert_score_to_network_format(score, args, time_max):
-    """ score must be flatten """
-
-    lengthScore = ceil(time_to_timesteps(score, args)) + 1  # To add OFF event
-    lengthInOutput = 7 * 12 * 2
-
-    # First dim : One time step
-    # Second dim : 7 octaves * 12 notes * 2 events (on, off)
-    data = np.zeros((lengthScore, lengthInOutput))
-
-    for note in score.recurse().notes:
-        if isinstance(note, Chord):
-            for subNote in note:
-                add_note(data, subNote, args, time_max)
-
-        else:
-            add_note(data, note, args, time_max)
-
-    return data
-
-
-def add_note(data, note, args, time_max):
-    offsetTimeNoteOn = offset_time(note, args)
-    offsetPitchNoteOn = offset_pitch_on(note)
-
-    offsetTimeNoteOff = offset_time_end(note, args)
-    offsetPitchNoteOff = offset_pitch_off(note)
-
-    # For consistency each note on must be followed by a note off
-    # But an issue, can appear. What if:
-    # 1 - The same note happen in the same time and don't have the same
-    #     length?
-    # 2 - The current note happen between another same note on/off events?
-    # A note on event must be triggered at the end of the first note played
-    # Examples (S : Start/Note ON ; E : End/Note OFF) :
-    # _S_S____ must become  _S_S____
-    # _____E_E              ___E___E
-
-    # Note ON always applies
-    data[offsetTimeNoteOn][offsetPitchNoteOn] = True
-
-    # Detect conflict
-    offsetTimeOtherNoteOff = get_time_end(data, offsetTimeNoteOn,
-                                          offsetPitchNoteOff, args, time_max)
-    if not offsetTimeOtherNoteOff:
-        data[offsetTimeNoteOff][offsetPitchNoteOff] = True
-    else:
-        data[offsetTimeNoteOn][offsetPitchNoteOff] = True
-
-        offsetTimeConflictEndNoteOff = max(offsetTimeNoteOff,
-                                           offsetTimeOtherNoteOff)
-        if offsetTimeOtherNoteOff != offsetTimeConflictEndNoteOff:
-            data[offsetTimeOtherNoteOff][offsetPitchNoteOff] = False
-            data[offsetTimeConflictEndNoteOff][offsetPitchNoteOff] = True
-
-
-def convert_score_from_network_format(raw_data, args, time_max):
-    score = Stream()
-
-    for timestep in range(0, len(raw_data)):
-        for event in range(0, len(raw_data[timestep])):
-            if raw_data[timestep][event] == 1 and offset_pitch_is_on(event):
-                pitch = offset_to_pitch(event)
-                offset_off = offset_pitch_on_to_off(event)
-
-                offset_time = timesteps_to_time(timestep, args)
-                offset_timestep_end = get_time_end(raw_data, timestep,
-                                                   offset_off, args, time_max)
-                if not offset_timestep_end:
-                    logger.warning('End event missing. Skipping note...')
-                    continue
-
-                length_timestep = offset_timestep_end - timestep
-                length = timesteps_to_time(length_timestep, args)
-
-                note = Note(pitch)
-                note.offset = offset_time
-                note.quarterLength = length
-
-                score.insert(note, ignoreSort=True)
-
-    score.sort()
-    return score
-
-
-def get_time_end(data, offsetTimeNoteOn, offsetPitchNoteOff, args, time_max):
-    # Prevent for going beyond 6 quarter notes are the end of the score
-    max_timesteps = min(offsetTimeNoteOn + time_to_timesteps(time_max, args),
-                        len(data))
-
-    offsetTimeNoteOn += 1
-    for curOffset in range(offsetTimeNoteOn, max_timesteps):
-        if data[curOffset][offsetPitchNoteOff] == 1:
-            return curOffset
-
-    return None
-
-
-def time_to_timesteps(obj, args):
-    if isinstance(obj, numbers.Real):
-        quarterLength = obj
-    else:
-        quarterLength = obj.quarterLength
-
-    length = quarterLength * args.max_time_step_per_quarter
-
-    if length % 1 != 0.0:  # if length is decimal, there is an issue
-        raise IncompatibleTimeSteps(length)
-
-    return int(length)
-
-
-def timesteps_to_time(timesteps, args):
-    return timesteps / args.max_time_step_per_quarter
-
-
-def offset_time(note, args):
-    offset = note.offset * args.max_time_step_per_quarter
-
-    if offset % 1 != 0.0:  # If offset is decimal, there is an issue
-        raise IncompatibleTimeSteps(offset)
-
-    return int(offset)
-
-
-def offset_time_end(note, args):
-    return offset_time(note, args) + time_to_timesteps(note, args)
-
-
-def offset_pitch_on(note):
-    """ Note ON are pair offsets """
-    return offset_octave(note) + offset_in_octave(note)
-
-
-def offset_pitch_is_on(offset):
-    return (offset % 2) == 0
-
-
-def offset_pitch_off(note):
-    """ Note OFF are impair offsets """
-    return offset_octave(note) + offset_in_octave(note) + 1
-
-
-def offset_pitch_is_off(offset):
-    return (offset % 2) == 1
-
-
-def offset_pitch_on_to_off(offset):
-    return offset + 1
-
-
-def offset_to_pitch(offset):
-    p = Pitch('C3')
-    return p.transpose(floor(offset / 2))
-
-
-def offset_octave(note):
-    return (note.octave - 3) * 24
-
-
-def offset_in_octave(note):
-    return semitones(note) * 2
-
-
-def semitones(note):
-    refPitch = Pitch('C3')
-    return notesToChromatic(refPitch, note.pitch).semitones % 12
-
-
-def detect_time_complexity(score):
-    maxTime = -inf
-    denominator = 1
-
-    for curNote in score.recurse().notesAndRests:
-        quarterLength = curNote.quarterLength
-
-        # Accumulate all the length in the tie note
-        #if curNote.tie == Tie('start'):
-        #    while curNote.tie and curNote.tie != Tie('stop'):
-        #        curNote = curNote.next(type(curNote))
-        #        if curNote:
-        #            quarterLength += curNote.quarterLength
-        #        else:
-        #            logger.warning('Cannot iterate over tie note')
-        #            break
-
-        assert quarterLength
-
-        if quarterLength > maxTime:
-            maxTime = quarterLength
-
-        fraction = Fraction(1, denominator) + Fraction(quarterLength)
-        if fraction.denominator > denominator:  # No simplification
-            denominator = fraction.denominator
-
-    return (denominator, maxTime)
-
-
-def detect_min_max_octaves(score):
-    minMaxOctaves = (inf, -inf)
-
-    for curNote in score.recurse().notes:
-        if isinstance(curNote, Chord):
-            for curChordNote in curNote:
-                minMaxOctaves = update_min_max(minMaxOctaves,
-                                               curChordNote.octave)
-        else:
-            minMaxOctaves = update_min_max(minMaxOctaves, curNote.octave)
-
-    return minMaxOctaves
-
-
-def update_min_max(minMaxVal, val):
-    (minVal, maxVal) = minMaxVal
-
-    if val < minVal:
-        minVal = val
-    elif val > maxVal:
-        maxVal = val
-
-    return (minVal, maxVal)
-
-
-def display_time_step_graph(time_steps):
-    countData = len(time_steps)
-
-    fig, ax1 = plt.subplots()
-    ax2 = ax1.twinx()
-    ax2.yaxis.set_major_formatter(PercentFormatter())
-
-    def to_percent(ax1):
-        y1, y2 = ax1.get_ylim()
-        ax2.set_ylim(y1 / countData * 100, y2 / countData * 100)
-
-    ax1.callbacks.connect('ylim_changed', to_percent)
-
-    ax1.hist(time_steps, bins=max(time_steps), cumulative=True,
-             histtype='step')
-    ax1.set_xscale('log')
-    ax1.set_title('Cumulated count of scores (total: ' + str(countData) + ') \
-                   according to time steps')
-    ax1.set_xlabel('Required time steps per 1/4 note')
-    ax1.set_ylabel('Count of scores')
-    ax2.set_ylabel('Relative count of scores')
-    ax2.grid(True)
-
-    plt.show()
 
 
 def get_argument_parser():
