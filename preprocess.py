@@ -154,9 +154,11 @@ def process_one(process_args):
 
 
 def modify_piece(score, file_loc, args):
+    tspq = args.max_time_step_per_quarter
+
     # Skip if too complex
     (denominator, time_max) = detect_time_complexity(score)
-    if denominator > args.max_time_step_per_quarter:
+    if denominator > tspq:
         return
 
     if not args.keep_percussions:
@@ -177,7 +179,7 @@ def modify_piece(score, file_loc, args):
 
     # Convert to network format
     try:
-        raw_data = convert_score_to_network_format(score, args, time_max)
+        raw_data = convert_score_to_network_format(score, tspq, time_max)
     except IncompatibleTimeSteps as e:
         logger.error('Cannot represent %s duration with %d time steps for %s' %
                      (str(e.time_step), args.max_time_step_per_quarter,
@@ -185,7 +187,7 @@ def modify_piece(score, file_loc, args):
         return
 
     if args.debug_output_midi:
-        score = convert_score_from_network_format(raw_data, args, time_max)
+        score = convert_score_from_network_format(raw_data, tspq, time_max)
         save_midi(score, file_loc, args)
 
     return raw_data
