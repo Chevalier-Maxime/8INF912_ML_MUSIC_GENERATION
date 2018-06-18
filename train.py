@@ -4,6 +4,7 @@
 
 import gzip
 import pickle
+from math import floor
 from argparse import ArgumentParser
 from model import build_model, train_model
 from keras.callbacks import ModelCheckpoint
@@ -36,6 +37,10 @@ def main():
     arg_parser.add_argument('--batch-size', dest='batch_size', type=str,
                             help='Size of batch required to update weights',
                             default=128)
+    arg_parser.add_argument('--sub-sample', dest='sub_sample', type=float,
+                            help='Percentage (0.0 -> 1.0) of the original \
+                            dataset to use (useful if there is not enough \
+                            memory', default=1.0)
     args = arg_parser.parse_args()
 
     corpus = load_data(args.data_file)
@@ -43,10 +48,14 @@ def main():
     epochs = args.epochs
     batch_size = args.batch_size
     output_folder = args.output_folder
+    sub_sample_size = floor(len(corpus) * args.sub_sample)
 
     # Setup output folder
     if not path.exists(output_folder):
         makedirs(output_folder)
+
+    # Extract subsample
+    corpus = corpus[0:sub_sample_size]
 
     # TODO: Resume function
 
