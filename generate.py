@@ -41,7 +41,7 @@ def main():
     tspq = args.timesteps_per_quarter
     seq_len = args.sequence_length * tspq
     length_musics = args.length * tspq
-    seed = tinyNotation.Converter(args.seed).parse().stream
+    seed = tinyNotation.Converter(args.seed).parse().stream.flat
     count_musics = args.count
     input_folder = args.input_folder
     output_folder = args.output_folder
@@ -69,11 +69,9 @@ def main():
             data = np.vstack([data, Y])
 
         data = np.round(data)
-        np.set_printoptions(threshold=np.nan)  # TODO: Remove
-        print(data)  # TODO: Remove
-        score = convert_score_from_network_format(data, tspq, max_time)
-        score.show('t')  # TODO: Remove
+        score = convert_score_from_network_format(data, tspq, 6)
         score.write('midi', path.join(output_folder, str(i) + '.mid'))
+
 
 if __name__ == "__main__":
     main()
