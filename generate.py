@@ -72,6 +72,8 @@ def main():
         score = convert_score_from_network_format(data, tspq, 6)
         score.write('midi', path.join(output_folder, str(i) + '.mid'))
 
+        seed.transpose(i + 1, inPlace=True)
+
 
 if __name__ == "__main__":
     main()
