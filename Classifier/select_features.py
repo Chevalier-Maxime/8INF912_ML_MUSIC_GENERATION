@@ -3,7 +3,6 @@
 #Thanks to https://github.com/cjnolet/midi_genre_corpus
 
 import sys
-assert sys.version_info < (3, 0)
 
 from argparse import ArgumentParser
 
@@ -36,7 +35,7 @@ import os
 import sys
 import string
 from music21 import features
-from itertools import chain, imap
+from itertools import chain
 import csv
 import json
 import random

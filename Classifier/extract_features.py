@@ -12,7 +12,6 @@ except ImportError:
     import _thread as thread
 
 import sys
-assert sys.version_info < (3, 0)
 
 from argparse import ArgumentParser
 from music21 import converter

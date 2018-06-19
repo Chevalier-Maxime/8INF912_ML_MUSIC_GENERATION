@@ -1,5 +1,4 @@
 import sys
-assert sys.version_info < (3, 0)
 
 from sklearn.externals import joblib
 import select_features as sf
