@@ -16,8 +16,9 @@ import plot_unveil_tree_structure as pretty_path
 
 #Might not work due to OS privileges
 def exctract_features_from_midi_files(input_folder):
-    print(os.path.join(input_folder,'midi'))
-    print(not os.path.isdir(os.path.join(input_folder,'midi')))
+    """
+    Exctract features from midi files
+    """
     if not os.path.isdir(os.path.join(input_folder,'GENERATED','midi')):
         os.mkdir(os.path.join(input_folder,'GENERATED'))
         os.mkdir(os.path.join(input_folder,'GENERATED','midi'))
@@ -39,6 +40,12 @@ def exctract_features_from_midi_files(input_folder):
     ef.main(input_folder)
 
 def test_features_from_midi_files(args):
+    """
+    This method class the midi file in 3 categories : RANDOM, REAL MUSIC or FF (Final Fantasy)
+    using the model given through args.
+    """
+
+    #Prepare model load
     model_filename = 'finalized_model_random_Forest.pkl'
     model_path_filename = os.path.join(args.input_model, model_filename)
 
@@ -48,35 +55,37 @@ def test_features_from_midi_files(args):
     excluded_filename = 'finalized_excluded_random_Forest.pkl'
     excluded_path_filename = os.path.join(args.input_model, excluded_filename)
 
-
+    #Load required data
     model = joblib.load(model_path_filename)
     features_index = joblib.load(features_path_filename)
     features_index.sort()
     excluded_features = joblib.load(excluded_path_filename)
 
+    #Build vectors of features
     vecs = sf.build_vectors(excluded_features,args.input_folder)
 
-    # Not needed random.shuffle(vecs)
-    X, _ = map(lambda x: x[0:len(x)-2], vecs), map(lambda x: x[len(x)-2], vecs)
-    
-
+    #Prepare data for prediction
+    X = map(lambda x: x[0:len(x)-2], vecs)
     X_new = []
     for full_features in X:
         feature_tmp = []
         for i in features_index:
             feature_tmp.append(full_features[i])
         X_new.append(feature_tmp)
-
     X_array = np.asarray(X_new)
+
+    #Do prediction
     y_predicted = model.predict_proba(X_array)
     y_predicted_Label = model.predict(X_array)
 
-    classes = model.classes_.tolist()
 
+    #Output
+    classes = model.classes_.tolist()
     proba = 0.9
     if args.proba is not None:
         proba = args.proba
-    # Resultats
+    
+    # Results
     for i in range(0,len(y_predicted)):
         indexProba = classes.index(y_predicted_Label[i])
         if y_predicted[i][indexProba] >= proba :
@@ -88,7 +97,10 @@ def test_features_from_midi_files(args):
                 os.makedirs(path_new_file)
             path_new_file = os.path.join(path_new_file, filename[:-4] + str(y_predicted[i][indexProba]) + '.mid')
             shutil.copyfile(path_old_file, path_new_file)
+    
     #Debug option
+    # Print one tree of the random forest model in console
+    # and in dt.dot
     if args.debug_graph:
         pretty_path.pretty_path(model.estimators_[0])
         dotfile = open("dt.dot", 'w')

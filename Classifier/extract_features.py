@@ -140,7 +140,7 @@ def main(input_folder):
         print(g)
         mids = os.listdir(os.path.join(basedir, g, "midi"))
         for i in mids:
-            print(os.path.join(basedir, g, "midi",i))
+            # print(os.path.join(basedir, g, "midi",i))
             if(i.endswith("midi") or i.endswith("mid")):
                 final_mids.append(os.path.join(basedir, g, "midi",i))
     

@@ -154,19 +154,6 @@ def plot_confusion_matrix(cm, classes,
     plt.xlabel('Predicted label')
 
 
-# def plot_confusion_matrix(cm, title='Confusion matrix', cmap='Blues'):
-#     plt.figure(figsize=(8,8))
-#     plt.imshow(cm, interpolation='nearest', cmap=cmap)
-#     plt.title(title)
-#     plt.colorbar()
-#     tick_marks = np.arange(len(genres))
-#     plt.xticks(tick_marks, genres, rotation=90)
-#     plt.yticks(tick_marks, genres)
-    
-#     plt.ylabel('True label')
-#     plt.xlabel('Predicted label')
-
-
 def read_data(basedir):
 
     # Features that failed to extract will not be written to files. Put all the failed
@@ -239,10 +226,7 @@ def main_RandomForest(basedir):
 
         count = 0
         for train_index, test_index in kf:
-            #mod = DecisionTreeClassifier(max_depth=5)
             mod = RandomForestClassifier(n_estimators=100, random_state=0, criterion="entropy")
-            #mod = KNeighborsClassifier(3)
-            #mod = AdaBoostClassifier()
 
             clf = mod.fit(X_fin[train_index], Y_fin[train_index])
 
