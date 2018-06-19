@@ -123,6 +123,9 @@ def flatten(dic):
             continue
 
         for stat in dic[fileLoc].keys():
+            if dic[fileLoc][stat] is None:
+                continue
+
             if res.get(stat) is None:
                 res[stat] = []
 
