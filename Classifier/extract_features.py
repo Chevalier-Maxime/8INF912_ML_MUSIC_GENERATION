@@ -12,13 +12,13 @@ except ImportError:
     import _thread as thread
 
 import sys
+assert sys.version_info < (3, 0)
 
 from argparse import ArgumentParser
 from music21 import converter
 from music21 import features
 from music21 import environment
 import threading
-import sys
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 

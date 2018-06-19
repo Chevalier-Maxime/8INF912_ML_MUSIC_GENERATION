@@ -1,30 +1,18 @@
 # coding: utf-8
 
-#Thanks to https://github.com/cjnolet/midi_genre_corpus
+# Thanks to https://github.com/cjnolet/midi_genre_corpus
 
 import sys
+assert sys.version_info < (3, 0)
 
 from argparse import ArgumentParser
 
 from sklearn.ensemble import ExtraTreesClassifier
-from sklearn.datasets import load_iris
 from sklearn.feature_selection import SelectFromModel
-from sklearn import cross_validation
 from sklearn.metrics import confusion_matrix
 from sklearn.metrics import classification_report
 from sklearn.metrics import accuracy_score
-from sklearn.neural_network import MLPClassifier
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.svm import SVC
-from sklearn.gaussian_process import GaussianProcessClassifier
-from sklearn.gaussian_process.kernels import RBF
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.ensemble import RandomForestClassifier, AdaBoostClassifier
-from sklearn.naive_bayes import GaussianNB
-from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
-from matplotlib.colors import ListedColormap
+from sklearn.ensemble import RandomForestClassifier
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -32,24 +20,21 @@ from sklearn.cross_validation import StratifiedKFold
 from sklearn.externals import joblib
 
 import os
-import sys
-import string
 from music21 import features
-from itertools import chain
 import csv
-import json
 import random
 import itertools
 
-#TODO return nested should be enought ? :/
+
+# TODO return nested should be enought ? :/
 def fetch_genres(basedir):
     genres = []
     nested = os.listdir(basedir)
     for i in nested:
         try:
-            if(os.path.isdir(os.path.join(basedir,i)) and not i.startswith(".")):
+            if(os.path.isdir(os.path.join(basedir, i)) and not i.startswith(".")):
                 genres.append(i)
-        except:
+        except Exception:
             print("An error occured trying to load features for genre " + i)
     return genres
 
@@ -63,21 +48,22 @@ def failed_features(basedir):
     fs = features.jSymbolic.extractorsById
     genres = fetch_genres(basedir)
     for genre in genres:
-        try: 
-            filename = os.path.join(basedir , genre ,"features")
+        try:
+            filename = os.path.join(basedir, genre, "features")
             files = os.listdir(filename)
             for aFile in files:
                 if aFile.endswith(".csv"):
-                    arr = fileToArray(os.path.join(filename,aFile))
+                    arr = fileToArray(os.path.join(filename, aFile))
                     arr1 = set(map(lambda x: tuple(x[0:2]), arr))
-                    # If features failed to extract 
+                    # If features failed to extract
                     for k in fs:
                         if k is not "I":
                             for i in range(len(fs[k])):
-                                if (k,str(i)) not in arr1 and fs[k][i] is not None:
-                                    not_included.add((k,i))
-        except:
+                                if (k, str(i)) not in arr1 and fs[k][i] is not None:
+                                    not_included.add((k, i))
+        except Exception:
             print("An error occured trying to load features for genre " + genre)
+
     return not_included
 
 
@@ -86,12 +72,12 @@ def build_vectors(exclude_features, basedir):
     final_vecs = []
     for genre in genres:
         try:
-            filename = os.path.join(basedir , genre ,"features")
+            filename = os.path.join(basedir, genre, "features")
             files = os.listdir(filename)
             for aFile in files:
                 vec = []
                 if aFile.endswith(".csv"):
-                    arr = fileToArray(os.path.join(filename,aFile))
+                    arr = fileToArray(os.path.join(filename, aFile))
                     for i in arr:
                         if (i[0], int(i[1])) not in exclude_features:
                             vec.append(map(lambda x: float(x), i[3:]))
@@ -100,9 +86,10 @@ def build_vectors(exclude_features, basedir):
                     final_vec.append(genre)
                     final_vec.append(aFile)
                     final_vecs.append(final_vec)
-                    
-        except:
+
+        except Exception:
             print("Error occured trying to load features for " + genre)
+
     return final_vecs
 
 
@@ -112,10 +99,11 @@ def fileToArray(filename):
         reader = csv.reader(f)
         try:
             array = list(reader)
-        except: 
+        except Exception:
             print("Error reading: " + filename)
     f.close()
     return array
+
 
 def plot_confusion_matrix(cm, classes,
                           normalize=False,
@@ -161,9 +149,9 @@ def read_data(basedir):
     not_included = failed_features(basedir)
 
     # Vectors is a list of lists. The inner list contains the features and the resulting
-    # labels in the last position of each vector. 
+    # labels in the last position of each vector.
     vecs = build_vectors(not_included, basedir)
-    
+
     return (vecs, not_included)
 
 
@@ -171,9 +159,9 @@ def select_features(X, y):
 
     clf = ExtraTreesClassifier()
     clf = clf.fit(X, y)
-    importances = clf.feature_importances_ 
+    importances = clf.feature_importances_
     model = SelectFromModel(clf, prefit=True)
-    
+
     X_new = model.transform(X)
 
     ranks = []
@@ -185,6 +173,7 @@ def select_features(X, y):
 
     return (X_new, ranks)
 
+
 def main_RandomForest(basedir):
     genres = fetch_genres(basedir)
     print(genres)
@@ -193,38 +182,36 @@ def main_RandomForest(basedir):
     accuracies = []
 
     sel_features = []
-    
+
     best_model = None
     best_Accuracy = 0
     best_cm = None
     best_features = None
     best_excluded = None
 
-
-    for i in range(0,5):
+    for i in range(0, 5):
         vecs, excluded = read_data(basedir)
         random.shuffle(vecs)
-        
+
         X, y = map(lambda x: x[0:len(x)-2], vecs), map(lambda x: x[len(x)-2], vecs)
-        
+
         selected = select_features(X, y)
         X_new = selected[0]
-        
+
         sel_features.append(set(map(lambda x: x[1], selected[1])))
-        
+
         print("Feature Rankings for run " + str(i))
         # for rank in selected[1]:
         #     print(rank)
         # print(np.asarray(X[0]))
         # print(X_new[0])
         print("Number of features : %d" % len(selected[1]))
-        
+
         X_fin = np.array(X_new)
         Y_fin = np.array(y)
-        
+
         kf = StratifiedKFold(Y_fin, 2)
 
-        count = 0
         for train_index, test_index in kf:
             mod = RandomForestClassifier(n_estimators=100, random_state=0, criterion="entropy")
 
@@ -236,13 +223,13 @@ def main_RandomForest(basedir):
             Y_pred = clf.predict(X_test)
 
             cm = confusion_matrix(Y_test, Y_pred, genres)
-            #plot_confusion_matrix(cm, genres, normalize=True)
-            cr = classification_report(Y_test, Y_pred)
-            
-            #print(str(cr))
-            
+            # plot_confusion_matrix(cm, genres, normalize=True)
+            # cr = classification_report(Y_test, Y_pred)
+
+            # print(str(cr))
+
             a_score = accuracy_score(Y_test, Y_pred, True)
-            if a_score > best_Accuracy :
+            if a_score > best_Accuracy:
                 best_Accuracy = a_score
                 best_model = clf
                 best_cm = cm
@@ -250,7 +237,7 @@ def main_RandomForest(basedir):
                 best_excluded = excluded
             matrices.append(cm)
             accuracies.append(a_score)
-        
+
     # Average together the confusion matrix values
     final_cf = []
     for i in range(0, len(matrices[0])):
@@ -272,9 +259,8 @@ def main_RandomForest(basedir):
     # plt.clf()
 
     plot_confusion_matrix(best_cm, genres, normalize=True)
-    #plt.show()
+    # plt.show()
 
-    
     print(str(sum / len(accuracies)))
 
     print(str(len(sel_features[0])))
@@ -285,23 +271,23 @@ def main_RandomForest(basedir):
     return (best_model, best_features, best_excluded)
 
 
-
 if __name__ == "__main__":
     parser = ArgumentParser()
 
     # Mandatory arguments
     parser.add_argument('input_folder', type=str, help='The folder containing \
-            the game folders containing genre folder which contains features folders (*.csv)')
+                        the game folders containing genre folder which \
+                        contains features folders (*.csv)')
     parser.add_argument('output_folder', type=str, help='The folder where the \
-            model will be saved')
-    
+                        model will be saved')
+
     args = parser.parse_args()
 
     if not os.path.isdir(args.input_folder):
         print('%s is not a directory' % args.input_folder)
         sys.exit()
-    
-    #Get all genres
+
+    # Get all genres
     basedir = args.input_folder
 
     model, features, excluded = main_RandomForest(basedir)
@@ -312,7 +298,7 @@ if __name__ == "__main__":
 
     if not os.path.isdir(args.output_folder):
         os.mkdir(args.output_folder)
-    
+
     model_filename = 'finalized_model_random_Forest.pkl'
     model_path_filename = os.path.join(args.output_folder, model_filename)
 
@@ -322,19 +308,17 @@ if __name__ == "__main__":
     excluded_filename = 'finalized_excluded_random_Forest.pkl'
     excluded_path_filename = os.path.join(args.output_folder, excluded_filename)
 
-    #if contain one, assume it contain all
+    # if contain one, assume it contain all
     if 'finalized_model_random_Forest.pkl' in os.listdir(args.output_folder):
         try:
             os.remove(model_path_filename)
             os.remove(features_path_filename)
             os.remove(excluded_path_filename)
-        except:
+        except Exception:
             pass
 
-    #model.write().overwrite().save(path_filename)
+    # model.write().overwrite().save(path_filename)
     joblib.dump(model, model_path_filename)
     joblib.dump(features_indice, features_path_filename)
     joblib.dump(excluded, excluded_path_filename)
     print('Model succefully saved into %s' % model_path_filename)
-
-    
