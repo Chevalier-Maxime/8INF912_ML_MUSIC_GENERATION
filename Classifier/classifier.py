@@ -86,10 +86,21 @@ def test_features_from_midi_files(args):
     if args.proba is not None:
         proba = args.proba
     
+    nbClassified = 0
+    nbFF = 0
+    nbRM = 0
+    nbRand = 0
     # Results
     for i in range(0,len(y_predicted)):
         indexProba = classes.index(y_predicted_Label[i])
         if y_predicted[i][indexProba] >= proba :
+            if y_predicted_Label[i] == 'REAL_MUSIC':
+                nbRM+=1
+            elif y_predicted_Label[i] == 'FF':
+                nbFF+=1
+            else:
+                nbRand+=1
+            nbClassified+=1
             filename = vecs[i][len(vecs[i])-1][:-4]
             print("file : %s is classified as : %s with probability %s (%s)" % (filename, y_predicted_Label[i], y_predicted[i][indexProba], y_predicted[i] ))
             path_old_file = os.path.join(args.input_folder, 'GENERATED', 'midi', filename)
@@ -99,6 +110,11 @@ def test_features_from_midi_files(args):
             path_new_file = os.path.join(path_new_file, filename[:-4] + str(y_predicted[i][indexProba]) + '.mid')
             shutil.copyfile(path_old_file, path_new_file)
     
+    print('Number of classified with >%s probability : %s ' % (proba, nbClassified))
+    print('Number of Final Fantasy : %s' % nbFF)
+    print('Number of Real Music : %s' % nbRM)
+    print('Number of Random : %s' %nbRand)
+
     #Debug option
     # Print one tree of the random forest model in console
     # and in dt.dot
